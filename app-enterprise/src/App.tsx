@@ -8,11 +8,36 @@ import {
 import dh from "@deephaven/jsapi-shim"; // Import the shim to use the JS API
 import "./App.scss"; // Styles for in this app
 
+const CLIENT_TIMEOUT = 60_000;
+
 const API_URL = process.env.REACT_APP_DEEPHAVEN_API_URL ?? "";
 
 const USER = process.env.REACT_APP_DEEPHAVEN_USER ?? "";
 
 const PASSWORD = process.env.REACT_APP_DEEPHAVEN_PASSWORD ?? "";
+
+/**
+ * Wait for Deephaven client to be connected
+ * @param client Deephaven client object
+ * @returns When the client is connected, rejects on timeout
+ */
+function clientConnected(client: any): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (client.isConnected) {
+      resolve();
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      reject(new Error("Timeout waiting for connect"));
+    }, CLIENT_TIMEOUT);
+
+    client.addEventListener(dh.Client.EVENT_CONNECT, () => {
+      resolve();
+      clearTimeout(timer);
+    });
+  });
+}
 
 /**
  * Load an existing Deephaven table with the client and query name provided
@@ -67,9 +92,47 @@ function loadTable(client: any, queryName: string, tableName: string) {
  * @returns Deephaven table
  */
 async function createTable(client: any) {
-  throw new Error(
-    "Creating table not yet implemented in example, please provide queryName/tableName in the URL params"
+  // Create a new session... API is currently undocumented and subject to change in future revisions
+  const ide = new dh.Ide(client);
+
+  // Create a default config
+  const config = new dh.ConsoleConfig();
+
+  // Set configuration parameters here if you don't want the default
+  // config.maxHeapMb = 2048;
+  // config.jvmProfile = ...;
+  // config.jvmArgs = ...;
+  // config.envVars = ...;
+  // config.classpath = ...;
+  // config.dispatcherHost = ...;
+  // config.dispatcherPort = ...;
+
+  console.log("Creating console with config ", config);
+
+  const dhConsole = await ide.createConsole(config);
+
+  console.log("Creating session...");
+
+  // Specify the language, 'python' or 'groovy'
+  const session = await dhConsole.startSession("python");
+
+  // Run the code in the session to open a table
+
+  console.log(`Creating table...`);
+
+  // Run the code you want to run. This example just creates a timeTable
+  await session.runCode("from deephaven.TableTools import timeTable");
+  const result = await session.runCode(
+    't = timeTable("00:00:01").update("A=i")'
   );
+
+  // Get the new table definition from the results
+  // Results also includes modified/removed objects, which doesn't apply in this case
+  const definition = result.changes.created[0];
+
+  console.log(`Fetching table ${definition.name}...`);
+
+  return await session.getObject(definition);
 }
 
 /**
@@ -84,6 +147,7 @@ function App() {
   const [model, setModel] = useState<IrisGridModel>();
   const [error, setError] = useState<string>();
   const [isLoading, setIsLoading] = useState(true);
+  const [client, setClient] = useState<any>();
 
   const initApp = useCallback(async () => {
     try {
@@ -100,6 +164,10 @@ function App() {
       console.log(`Creating client ${websocketUrl}...`);
 
       const client = new dh.Client(websocketUrl.href);
+
+      setClient(client);
+
+      await clientConnected(client);
 
       await client.login({ username: USER, token: PASSWORD, type: "password" });
 
@@ -131,6 +199,13 @@ function App() {
   useEffect(() => {
     initApp();
   }, [initApp]);
+
+  useEffect(() => {
+    return () => {
+      // On unmount, disconnect the client we created (which cleans up the session)
+      client?.disconnect();
+    };
+  }, [client]);
 
   const isLoaded = model != null;
 
